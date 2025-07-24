@@ -26,6 +26,28 @@ def geocodificar_direccion(direccion: str):
         return []
 
 
+def geocodificacion_inversa(lat, lon):
+    """Obtiene la dirección a partir de coordenadas."""
+    try:
+        respuesta = requests.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={
+                'lat': lat,
+                'lon': lon,
+                'format': 'json',
+                'addressdetails': 1,
+                'zoom': 18
+            },
+            headers={"User-Agent": "streamlit-app"},
+            timeout=10,
+        )
+        respuesta.raise_for_status()
+        data = respuesta.json()
+        return data.get('display_name', f'Coordenadas: {lat:.4f}, {lon:.4f}')
+    except requests.RequestException:
+        return f'Coordenadas: {lat:.4f}, {lon:.4f}'
+
+
 def calcular_distancia(lat1, lon1, lat2, lon2):
     """Calcula la distancia en kilómetros entre dos puntos."""
     r = 6371.0
@@ -35,6 +57,50 @@ def calcular_distancia(lat1, lon1, lat2, lon2):
     a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
     return r * c
+
+
+def crear_mapa_seleccion(ubicaciones_existentes=None, zoom_inicial=6):
+    """Crea un mapa interactivo para seleccionar ubicaciones."""
+    mapa = folium.Map(
+        location=[-9.19, -75.0152], 
+        zoom_start=zoom_inicial,
+        tiles='OpenStreetMap'
+    )
+    
+    # Agregar marcadores existentes si los hay
+    if ubicaciones_existentes:
+        for nombre, datos in ubicaciones_existentes.items():
+            color = 'green' if datos.get('tipo') == 'origen' else 'red'
+            icon = 'play' if datos.get('tipo') == 'origen' else 'stop'
+            
+            folium.Marker(
+                [datos['lat'], datos['lon']],
+                popup=f"{datos['tipo'].title()}: {nombre}",
+                icon=folium.Icon(color=color, icon=icon)
+            ).add_to(mapa)
+    
+    return mapa
+
+
+def procesar_click_mapa(data_mapa, tipo_ubicacion):
+    """Procesa el click en el mapa y extrae las coordenadas."""
+    if data_mapa['last_clicked'] is not None:
+        lat = data_mapa['last_clicked']['lat']
+        lon = data_mapa['last_clicked']['lng']
+        
+        # Obtener dirección aproximada
+        direccion = geocodificacion_inversa(lat, lon)
+        
+        return {
+            'lat': lat,
+            'lon': lon,
+            'display_name': direccion,
+            'tipo': tipo_ubicacion,
+            'metodo_seleccion': 'mapa'
+        }
+    
+    return None
+
 
 # Configuración de la página
 st.set_page_config(
@@ -123,6 +189,8 @@ if 'resultados_destino' not in st.session_state:
     st.session_state['resultados_destino'] = []
 if 'distancia_calculada' not in st.session_state:
     st.session_state['distancia_calculada'] = None
+if 'ubicacion_temporal' not in st.session_state:
+    st.session_state['ubicacion_temporal'] = None
 
 conductores_df = st.session_state['conductores_df']
 rutas_df = st.session_state['rutas_df']
@@ -288,71 +356,260 @@ elif pagina == "Rutas":
                        'fecha_inicio', 'fecha_fin', 'estado', 'carga_kg']
     st.dataframe(rutas_con_conductor[columnas_mostrar], use_container_width=True)
     
-    # Formulario para agregar ruta
+    # Formulario para agregar ruta con tabs
     with st.expander("➕ Planificar Nueva Ruta"):
-        col_busqueda1, col_busqueda2 = st.columns(2)
-        with col_busqueda1:
-            direccion_origen = st.text_input("Dirección de origen", key="direccion_origen_input")
-            if st.button("Buscar Origen"):
-                with st.spinner("Buscando origen..."):
-                    st.session_state['resultados_origen'] = geocodificar_direccion(direccion_origen)
-        for i, res in enumerate(st.session_state.get('resultados_origen', [])):
-            st.write(res.get('display_name'))
-            if st.button("Seleccionar", key=f"sel_origen_{i}"):
-                st.session_state['direccion_origen_seleccionada'] = res
-                st.session_state['resultados_origen'] = []
-                st.success(f"Origen seleccionado: {res.get('display_name')}")
+        st.markdown("### 🎯 Selección de Ubicaciones")
+        
+        # Tabs para diferentes modos de selección
+        tab1, tab2 = st.tabs(["🔍 Búsqueda por Texto", "🗺️ Selección en Mapa"])
+        
+        # TAB 1: Búsqueda por texto (código original mejorado)
+        with tab1:
+            st.markdown("**Busca direcciones escribiendo la dirección:**")
+            
+            col_busqueda1, col_busqueda2 = st.columns(2)
+            with col_busqueda1:
+                st.subheader("📍 Origen")
+                direccion_origen = st.text_input("Dirección de origen", key="direccion_origen_input")
+                if st.button("🔍 Buscar Origen", key="buscar_origen_texto"):
+                    with st.spinner("Buscando origen..."):
+                        st.session_state['resultados_origen'] = geocodificar_direccion(direccion_origen)
+                
+                for i, res in enumerate(st.session_state.get('resultados_origen', [])):
+                    st.write(f"📍 {res.get('display_name')}")
+                    if st.button("Seleccionar", key=f"sel_origen_texto_{i}"):
+                        res['metodo_seleccion'] = 'busqueda'
+                        st.session_state['direccion_origen_seleccionada'] = res
+                        st.session_state['resultados_origen'] = []
+                        st.success("✅ Origen seleccionado!")
+                        st.rerun()
 
-        with col_busqueda2:
-            direccion_destino = st.text_input("Dirección de destino", key="direccion_destino_input")
-            if st.button("Buscar Destino"):
-                with st.spinner("Buscando destino..."):
-                    st.session_state['resultados_destino'] = geocodificar_direccion(direccion_destino)
-        for i, res in enumerate(st.session_state.get('resultados_destino', [])):
-            st.write(res.get('display_name'))
-            if st.button("Seleccionar", key=f"sel_destino_{i}"):
-                st.session_state['direccion_destino_seleccionada'] = res
-                st.session_state['resultados_destino'] = []
-                st.success(f"Destino seleccionado: {res.get('display_name')}")
+            with col_busqueda2:
+                st.subheader("🎯 Destino")
+                direccion_destino = st.text_input("Dirección de destino", key="direccion_destino_input")
+                if st.button("🔍 Buscar Destino", key="buscar_destino_texto"):
+                    with st.spinner("Buscando destino..."):
+                        st.session_state['resultados_destino'] = geocodificar_direccion(direccion_destino)
+                
+                for i, res in enumerate(st.session_state.get('resultados_destino', [])):
+                    st.write(f"🎯 {res.get('display_name')}")
+                    if st.button("Seleccionar", key=f"sel_destino_texto_{i}"):
+                        res['metodo_seleccion'] = 'busqueda'
+                        st.session_state['direccion_destino_seleccionada'] = res
+                        st.session_state['resultados_destino'] = []
+                        st.success("✅ Destino seleccionado!")
+                        st.rerun()
+        
+        # TAB 2: Selección en mapa (nueva funcionalidad)
+        with tab2:
+            st.markdown("**Haz clic en el mapa para seleccionar ubicaciones:**")
+            
+            # Instrucciones visuales
+            st.markdown("""
+            <div style='background-color: #f0f8ff; padding: 10px; border-radius: 5px; margin: 10px 0;'>
+            <h4>🗺️ Instrucciones:</h4>
+            <ul>
+            <li><strong>1.</strong> Elige si vas a marcar origen o destino</li>
+            <li><strong>2.</strong> Haz clic en cualquier punto del mapa</li>
+            <li><strong>3.</strong> Confirma la ubicación seleccionada</li>
+            <li><strong>4.</strong> Repite para la segunda ubicación</li>
+            </ul>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Selector de qué ubicación se está marcando
+            col1, col2 = st.columns(2)
+            with col1:
+                seleccionando = st.radio(
+                    "¿Qué ubicación estás seleccionando?",
+                    ["📍 Origen", "🎯 Destino"],
+                    key="radio_seleccion_mapa"
+                )
+            
+            with col2:
+                if st.button("🔄 Limpiar Selecciones", key="limpiar_mapa"):
+                    st.session_state['direccion_origen_seleccionada'] = None
+                    st.session_state['direccion_destino_seleccionada'] = None
+                    st.session_state['ubicacion_temporal'] = None
+                    st.rerun()
+            
+            # Preparar ubicaciones existentes para mostrar en el mapa
+            ubicaciones_para_mapa = {}
+            if st.session_state['direccion_origen_seleccionada']:
+                origen = st.session_state['direccion_origen_seleccionada']
+                ubicaciones_para_mapa['Origen'] = {
+                    'lat': float(origen['lat']),
+                    'lon': float(origen['lon']),
+                    'tipo': 'origen'
+                }
 
+            if st.session_state['direccion_destino_seleccionada']:
+                destino = st.session_state['direccion_destino_seleccionada']
+                ubicaciones_para_mapa['Destino'] = {
+                    'lat': float(destino['lat']),
+                    'lon': float(destino['lon']),
+                    'tipo': 'destino'
+                }
+
+            # Crear y mostrar el mapa interactivo
+            mapa_seleccion = crear_mapa_seleccion(ubicaciones_para_mapa)
+
+            # Mostrar el mapa y capturar interacciones
+            map_data = st_folium(
+                mapa_seleccion, 
+                width=700, 
+                height=400,
+                key="mapa_seleccion_ubicaciones"
+            )
+
+            # Procesar clicks en el mapa
+            if map_data['last_clicked'] is not None:
+                tipo_seleccionando = "origen" if "Origen" in seleccionando else "destino"
+                
+                ubicacion_seleccionada = procesar_click_mapa(map_data, tipo_seleccionando)
+                
+                if ubicacion_seleccionada:
+                    st.session_state['ubicacion_temporal'] = ubicacion_seleccionada
+                    
+                    st.info(f"📍 **Ubicación seleccionada para {tipo_seleccionando}:**")
+                    st.write(f"**Coordenadas:** {ubicacion_seleccionada['lat']:.4f}, {ubicacion_seleccionada['lon']:.4f}")
+                    st.write(f"**Dirección aproximada:** {ubicacion_seleccionada['display_name']}")
+                    
+                    # Botón para confirmar la selección
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        if st.button(f"✅ Confirmar {tipo_seleccionando.title()}", key=f"confirmar_{tipo_seleccionando}_mapa"):
+                            if tipo_seleccionando == "origen":
+                                st.session_state['direccion_origen_seleccionada'] = ubicacion_seleccionada
+                            else:
+                                st.session_state['direccion_destino_seleccionada'] = ubicacion_seleccionada
+                            
+                            st.session_state['ubicacion_temporal'] = None
+                            st.success(f"✅ {tipo_seleccionando.title()} confirmado!")
+                            st.rerun()
+                    
+                    with col2:
+                        st.write("👆 Confirma la selección o haz clic en otro punto del mapa")
+        
+        # Mostrar resumen de ubicaciones seleccionadas (en ambos tabs)
+        st.markdown("---")
+        st.markdown("### 📋 Ubicaciones Seleccionadas")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.session_state['direccion_origen_seleccionada']:
+                origen = st.session_state['direccion_origen_seleccionada']
+                metodo = origen.get('metodo_seleccion', 'busqueda')
+                icono_metodo = "🗺️" if metodo == 'mapa' else "🔍"
+                
+                st.success(f"✅ **Origen** {icono_metodo}")
+                st.write(f"📍 {origen.get('display_name', 'N/A')}")
+                st.write(f"📐 Coords: {float(origen['lat']):.4f}, {float(origen['lon']):.4f}")
+                
+                if st.button("❌ Quitar Origen", key="quitar_origen"):
+                    st.session_state['direccion_origen_seleccionada'] = None
+                    st.rerun()
+            else:
+                st.info("📍 **Origen no seleccionado**")
+                st.write("Usa la búsqueda por texto o selecciona en el mapa")
+
+        with col2:
+            if st.session_state['direccion_destino_seleccionada']:
+                destino = st.session_state['direccion_destino_seleccionada']
+                metodo = destino.get('metodo_seleccion', 'busqueda')
+                icono_metodo = "🗺️" if metodo == 'mapa' else "🔍"
+                
+                st.success(f"✅ **Destino** {icono_metodo}")
+                st.write(f"🎯 {destino.get('display_name', 'N/A')}")
+                st.write(f"📐 Coords: {float(destino['lat']):.4f}, {float(destino['lon']):.4f}")
+                
+                if st.button("❌ Quitar Destino", key="quitar_destino"):
+                    st.session_state['direccion_destino_seleccionada'] = None
+                    st.rerun()
+            else:
+                st.info("🎯 **Destino no seleccionado**")
+                st.write("Usa la búsqueda por texto o selecciona en el mapa")
+
+        # Formulario principal para crear la ruta
         origen_sel = st.session_state.get('direccion_origen_seleccionada')
         destino_sel = st.session_state.get('direccion_destino_seleccionada')
-        if origen_sel:
-            st.info(f"Origen: {origen_sel.get('display_name')}")
-        if destino_sel:
-            st.info(f"Destino: {destino_sel.get('display_name')}")
 
         if origen_sel and destino_sel:
             lat1, lon1 = float(origen_sel['lat']), float(origen_sel['lon'])
             lat2, lon2 = float(destino_sel['lat']), float(destino_sel['lon'])
             distancia = calcular_distancia(lat1, lon1, lat2, lon2)
             st.session_state['distancia_calculada'] = distancia
-            st.success(f"Distancia calculada: {distancia:.2f} km")
+            
+            # Mostrar información de métodos de selección
+            metodo_origen = "🗺️ Mapa" if origen_sel.get('metodo_seleccion') == 'mapa' else "🔍 Búsqueda"
+            metodo_destino = "🗺️ Mapa" if destino_sel.get('metodo_seleccion') == 'mapa' else "🔍 Búsqueda"
+            
+            st.success(f"📊 **Ruta calculada:** {distancia:.1f} km")
+            st.write(f"**Origen seleccionado via:** {metodo_origen}")
+            st.write(f"**Destino seleccionado via:** {metodo_destino}")
 
-            mapa_prev = folium.Map(location=[(lat1 + lat2) / 2, (lon1 + lon2) / 2], zoom_start=6)
-            folium.Marker([lat1, lon1], popup=origen_sel['display_name']).add_to(mapa_prev)
-            folium.Marker([lat2, lon2], popup=destino_sel['display_name']).add_to(mapa_prev)
-            folium.PolyLine([[lat1, lon1], [lat2, lon2]], color="blue", weight=3).add_to(mapa_prev)
-            st_folium(mapa_prev, width=700, height=400)
+            # Vista previa del mapa mejorada
+            st.markdown("### 🗺️ Vista Previa de la Ruta")
+            mapa_prev = folium.Map(location=[(lat1 + lat2) / 2, (lon1 + lon2) / 2], zoom_start=8)
+            
+            folium.Marker(
+                [lat1, lon1], 
+                popup=f"<b>Origen</b><br>{origen_sel.get('display_name', 'N/A')}<br>Método: {metodo_origen}",
+                icon=folium.Icon(color='green', icon='play')
+            ).add_to(mapa_prev)
+            
+            folium.Marker(
+                [lat2, lon2], 
+                popup=f"<b>Destino</b><br>{destino_sel.get('display_name', 'N/A')}<br>Método: {metodo_destino}",
+                icon=folium.Icon(color='red', icon='stop')
+            ).add_to(mapa_prev)
+            
+            folium.PolyLine(
+                [[lat1, lon1], [lat2, lon2]], 
+                color="blue", 
+                weight=4, 
+                opacity=0.8,
+                popup=f"Distancia: {distancia:.1f} km"
+            ).add_to(mapa_prev)
+            
+            st_folium(mapa_prev, width=700, height=300)
 
+            # Formulario final para crear la ruta
+            st.markdown("### 📋 Detalles de la Ruta")
             with st.form("nueva_ruta"):
-                conductor_seleccionado = st.selectbox("Conductor", conductores_df['nombre'].values)
-                distancia_ruta = st.number_input(
-                    "Distancia (km)", value=float(distancia), format="%.2f", disabled=True
-                )
-                carga_ruta = st.number_input("Carga (kg)", min_value=1, value=1000)
-                fecha_inicio_ruta = st.date_input("Fecha de inicio")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    conductor_seleccionado = st.selectbox("👨‍💼 Conductor", conductores_df['nombre'].values)
+                    carga_ruta = st.number_input("📦 Carga (kg)", min_value=1, value=1000)
+                    
+                with col2:
+                    distancia_ruta = st.number_input(
+                        "📏 Distancia (km)", 
+                        value=float(distancia), 
+                        format="%.2f",
+                        help=f"Distancia calculada automáticamente: {distancia:.1f} km"
+                    )
+                    fecha_inicio_ruta = st.date_input("📅 Fecha de inicio")
 
-                submitted_ruta = st.form_submit_button("Planificar Ruta")
+                submitted_ruta = st.form_submit_button("🚛 Crear Ruta", use_container_width=True)
+                
                 if submitted_ruta:
                     conductor_id = st.session_state['conductores_df'][
                         st.session_state['conductores_df']['nombre'] == conductor_seleccionado
                     ]['id'].iloc[0]
+                    
                     nuevo_id = int(st.session_state['rutas_df']['id'].max()) + 1 if not st.session_state['rutas_df'].empty else 1
-                    origen_nombre = origen_sel['display_name']
-                    destino_nombre = destino_sel['display_name']
+                    
+                    # Crear nombres descriptivos para origen y destino
+                    origen_nombre = origen_sel.get('display_name', '').split(',')[0][:50]
+                    destino_nombre = destino_sel.get('display_name', '').split(',')[0][:50]
+                    
+                    # Agregar al diccionario de coordenadas
                     coordenadas_dict[origen_nombre] = [lat1, lon1]
                     coordenadas_dict[destino_nombre] = [lat2, lon2]
+                    
                     nueva_ruta = {
                         'id': nuevo_id,
                         'conductor_id': conductor_id,
@@ -364,16 +621,26 @@ elif pagina == "Rutas":
                         'estado': 'Planificada',
                         'carga_kg': carga_ruta
                     }
+                    
                     st.session_state['rutas_df'] = pd.concat([
                         st.session_state['rutas_df'],
                         pd.DataFrame([nueva_ruta])
                     ], ignore_index=True)
-                    st.success(
-                        f"Ruta {origen_nombre} → {destino_nombre} planificada para {conductor_seleccionado}!"
-                    )
+                    
+                    st.success(f"🎉 Ruta creada: {origen_nombre} → {destino_nombre}")
+                    st.success(f"📊 Distancia: {distancia:.1f} km | Carga: {carga_ruta} kg | Conductor: {conductor_seleccionado}")
+                    
+                    # Limpiar variables de sesión
                     st.session_state['direccion_origen_seleccionada'] = None
                     st.session_state['direccion_destino_seleccionada'] = None
                     st.session_state['distancia_calculada'] = None
+                    st.session_state['ubicacion_temporal'] = None
+                    st.session_state['resultados_origen'] = []
+                    st.session_state['resultados_destino'] = []
+                    
+                    st.rerun()
+        else:
+            st.info("💡 Selecciona tanto el origen como el destino para continuar con la planificación de la ruta.")
 
 elif pagina == "Mapa de Rutas":
     st.title("🗺️ Visualización de Rutas")
