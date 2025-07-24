@@ -196,7 +196,7 @@ elif pagina == "Rutas":
         )
     with col3:
         filtro_fecha = st.date_input("Filtrar desde fecha:")
-    
+
     # Aplicar filtros
     rutas_filtradas = rutas_df.copy()
     
@@ -206,6 +206,10 @@ elif pagina == "Rutas":
     
     if filtro_estado_ruta != "Todos":
         rutas_filtradas = rutas_filtradas[rutas_filtradas['estado'] == filtro_estado_ruta]
+
+    # Filtrar por fecha de inicio si se ha seleccionado una
+    if filtro_fecha:
+        rutas_filtradas = rutas_filtradas[rutas_filtradas['fecha_inicio'] >= pd.to_datetime(filtro_fecha)]
     
     # Agregar nombre del conductor a las rutas
     rutas_con_conductor = rutas_filtradas.merge(
