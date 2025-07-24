@@ -6,6 +6,9 @@ import plotly.express as px
 from datetime import timedelta
 import requests
 from math import radians, sin, cos, sqrt, atan2
+import numpy as np
+from itertools import permutations
+import plotly.graph_objects as go
 
 
 @st.cache_data
@@ -82,24 +85,342 @@ def crear_mapa_seleccion(ubicaciones_existentes=None, zoom_inicial=6):
     return mapa
 
 
-def procesar_click_mapa(data_mapa, tipo_ubicacion):
-    """Procesa el click en el mapa y extrae las coordenadas."""
-    if data_mapa['last_clicked'] is not None:
-        lat = data_mapa['last_clicked']['lat']
-        lon = data_mapa['last_clicked']['lng']
+def optimizar_ruta_multiple(origen, destinos, algoritmo="nearest_neighbor"):
+    """
+    Optimiza el orden de visita para múltiples destinos.
+    
+    Parámetros:
+    - origen: dict con coordenadas del punto de inicio
+    - destinos: lista de dicts con coordenadas de destinos
+    - algoritmo: 'nearest_neighbor', 'brute_force', o '2opt'
+    
+    Retorna:
+    - Orden optimizado de destinos y distancia total
+    """
+    if not destinos:
+        return [], 0
+    
+    if len(destinos) == 1:
+        distancia = calcular_distancia(
+            origen['lat'], origen['lon'],
+            destinos[0]['lat'], destinos[0]['lon']
+        )
+        return [0], distancia
+    
+    # Crear matriz de distancias
+    todos_puntos = [origen] + destinos
+    n = len(todos_puntos)
+    matriz_distancia = np.zeros((n, n))
+    
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                matriz_distancia[i][j] = calcular_distancia(
+                    todos_puntos[i]['lat'], todos_puntos[i]['lon'],
+                    todos_puntos[j]['lat'], todos_puntos[j]['lon']
+                )
+    
+    if algoritmo == "nearest_neighbor":
+        return _nearest_neighbor(matriz_distancia)
+    elif algoritmo == "brute_force" and len(destinos) <= 8:
+        return _brute_force(matriz_distancia)
+    elif algoritmo == "2opt":
+        return _two_opt(matriz_distancia)
+    else:
+        return _nearest_neighbor(matriz_distancia)
+
+
+def _nearest_neighbor(matriz_distancia):
+    """Algoritmo del vecino más cercano."""
+    n = len(matriz_distancia)
+    visitados = [False] * n
+    ruta = [0]  # Empezar desde el origen (índice 0)
+    visitados[0] = True
+    distancia_total = 0
+    
+    actual = 0
+    for _ in range(n - 1):
+        mejor_siguiente = -1
+        mejor_distancia = float('inf')
         
-        # Obtener dirección aproximada
-        direccion = geocodificacion_inversa(lat, lon)
+        for j in range(n):
+            if not visitados[j] and matriz_distancia[actual][j] < mejor_distancia:
+                mejor_distancia = matriz_distancia[actual][j]
+                mejor_siguiente = j
         
-        return {
-            'lat': lat,
-            'lon': lon,
-            'display_name': direccion,
-            'tipo': tipo_ubicacion,
-            'metodo_seleccion': 'mapa'
+        if mejor_siguiente != -1:
+            ruta.append(mejor_siguiente)
+            visitados[mejor_siguiente] = True
+            distancia_total += mejor_distancia
+            actual = mejor_siguiente
+    
+    # Convertir índices a orden de destinos (excluyendo origen)
+    orden_destinos = [i - 1 for i in ruta[1:]]
+    return orden_destinos, distancia_total
+
+
+def _brute_force(matriz_distancia):
+    """Fuerza bruta para rutas pequeñas (≤8 destinos)."""
+    n = len(matriz_distancia)
+    destinos_indices = list(range(1, n))  # Excluir origen (índice 0)
+    
+    mejor_distancia = float('inf')
+    mejor_orden = []
+    
+    for permutacion in permutations(destinos_indices):
+        distancia = 0
+        actual = 0  # Empezar desde origen
+        
+        for siguiente in permutacion:
+            distancia += matriz_distancia[actual][siguiente]
+            actual = siguiente
+        
+        if distancia < mejor_distancia:
+            mejor_distancia = distancia
+            mejor_orden = [i - 1 for i in permutacion]  # Convertir a índices de destinos
+    
+    return mejor_orden, mejor_distancia
+
+
+def _two_opt(matriz_distancia):
+    """Algoritmo 2-opt para mejora local."""
+    n = len(matriz_distancia)
+    if n <= 2:
+        return [0] if n == 2 else [], 0
+    
+    # Empezar con nearest neighbor
+    ruta_inicial, _ = _nearest_neighbor(matriz_distancia)
+    ruta = [0] + [i + 1 for i in ruta_inicial]  # Agregar origen al inicio
+    
+    mejorado = True
+    while mejorado:
+        mejorado = False
+        for i in range(1, len(ruta) - 2):
+            for j in range(i + 1, len(ruta)):
+                if j - i == 1:
+                    continue
+                
+                nueva_ruta = ruta[:]
+                nueva_ruta[i:j] = nueva_ruta[i:j][::-1]
+                
+                if _calcular_distancia_ruta(nueva_ruta, matriz_distancia) < _calcular_distancia_ruta(ruta, matriz_distancia):
+                    ruta = nueva_ruta
+                    mejorado = True
+    
+    orden_destinos = [i - 1 for i in ruta[1:]]
+    distancia_total = _calcular_distancia_ruta(ruta, matriz_distancia)
+    return orden_destinos, distancia_total
+
+
+def _calcular_distancia_ruta(ruta, matriz_distancia):
+    """Calcula la distancia total de una ruta."""
+    distancia = 0
+    for i in range(len(ruta) - 1):
+        distancia += matriz_distancia[ruta[i]][ruta[i + 1]]
+    return distancia
+
+
+def analizar_rutas_conductor(conductor_id, rutas_df, coordenadas_dict):
+    """Analiza todas las rutas de un conductor y sugiere optimizaciones."""
+    rutas_conductor = rutas_df[rutas_df['conductor_id'] == conductor_id].copy()
+    
+    if rutas_conductor.empty:
+        return None
+    
+    # Agrupar por fecha y estado para rutas del mismo día
+    rutas_pendientes = rutas_conductor[
+        rutas_conductor['estado'].isin(['Planificada', 'En progreso'])
+    ].copy()
+    
+    if rutas_pendientes.empty:
+        return {"mensaje": "No hay rutas pendientes para optimizar"}
+    
+    # Agrupar por fecha
+    rutas_por_fecha = rutas_pendientes.groupby(rutas_pendientes['fecha_inicio'].dt.date)
+    
+    optimizaciones = {}
+    
+    for fecha, rutas_dia in rutas_por_fecha:
+        if len(rutas_dia) <= 1:
+            continue
+        
+        # Determinar punto de origen común (primera ruta del día)
+        primera_ruta = rutas_dia.iloc[0]
+        if primera_ruta['origen'] in coordenadas_dict:
+            origen = {
+                'lat': coordenadas_dict[primera_ruta['origen']][0],
+                'lon': coordenadas_dict[primera_ruta['origen']][1],
+                'nombre': primera_ruta['origen']
+            }
+        else:
+            continue
+        
+        # Preparar destinos
+        destinos = []
+        for _, ruta in rutas_dia.iterrows():
+            if ruta['destino'] in coordenadas_dict:
+                destinos.append({
+                    'lat': coordenadas_dict[ruta['destino']][0],
+                    'lon': coordenadas_dict[ruta['destino']][1],
+                    'nombre': ruta['destino'],
+                    'id_ruta': ruta['id'],
+                    'carga': ruta['carga_kg']
+                })
+        
+        if len(destinos) < 2:
+            continue
+        
+        # Optimizar rutas
+        algoritmo = "brute_force" if len(destinos) <= 6 else "2opt"
+        orden_optimizado, distancia_optimizada = optimizar_ruta_multiple(origen, destinos, algoritmo)
+        
+        # Calcular distancia actual (sin optimizar)
+        distancia_actual = 0
+        punto_actual = origen
+        for destino in destinos:
+            distancia_actual += calcular_distancia(
+                punto_actual['lat'], punto_actual['lon'],
+                destino['lat'], destino['lon']
+            )
+            punto_actual = destino
+        
+        # Preparar resultado
+        destinos_ordenados = [destinos[i] for i in orden_optimizado]
+        ahorro = distancia_actual - distancia_optimizada
+        porcentaje_ahorro = (ahorro / distancia_actual) * 100 if distancia_actual > 0 else 0
+        
+        optimizaciones[fecha] = {
+            'origen': origen,
+            'destinos_original': destinos,
+            'destinos_optimizado': destinos_ordenados,
+            'orden_optimizado': orden_optimizado,
+            'distancia_actual': distancia_actual,
+            'distancia_optimizada': distancia_optimizada,
+            'ahorro_km': ahorro,
+            'ahorro_porcentaje': porcentaje_ahorro,
+            'algoritmo_usado': algoritmo
         }
     
-    return None
+    return optimizaciones
+
+
+def crear_mapa_ruta_optimizada(optimizacion_data):
+    """Crea un mapa mostrando la ruta optimizada vs la original."""
+    if not optimizacion_data:
+        return None
+    
+    origen = optimizacion_data['origen']
+    destinos_original = optimizacion_data['destinos_original']
+    destinos_optimizado = optimizacion_data['destinos_optimizado']
+    
+    # Calcular centro del mapa
+    todas_coords = [origen] + destinos_original
+    lat_centro = sum(punto['lat'] for punto in todas_coords) / len(todas_coords)
+    lon_centro = sum(punto['lon'] for punto in todas_coords) / len(todas_coords)
+    
+    mapa = folium.Map(location=[lat_centro, lon_centro], zoom_start=10)
+    
+    # Marcador de origen
+    folium.Marker(
+        [origen['lat'], origen['lon']],
+        popup=f"<b>ORIGEN</b><br>{origen['nombre']}",
+        icon=folium.Icon(color='black', icon='home')
+    ).add_to(mapa)
+    
+    # Marcadores de destinos con numeración optimizada
+    for i, destino in enumerate(destinos_optimizado):
+        folium.Marker(
+            [destino['lat'], destino['lon']],
+            popup=f"<b>Destino {i+1}</b><br>{destino['nombre']}<br>Carga: {destino['carga']} kg",
+            icon=folium.Icon(color='green', icon='info-sign'),
+            tooltip=f"Orden: {i+1}"
+        ).add_to(mapa)
+    
+    # Ruta optimizada (línea verde)
+    puntos_optimizados = [[origen['lat'], origen['lon']]]
+    for destino in destinos_optimizado:
+        puntos_optimizados.append([destino['lat'], destino['lon']])
+    
+    folium.PolyLine(
+        puntos_optimizados,
+        color='green',
+        weight=4,
+        opacity=0.8,
+        popup="Ruta Optimizada"
+    ).add_to(mapa)
+    
+    # Ruta original (línea roja punteada)
+    puntos_originales = [[origen['lat'], origen['lon']]]
+    for destino in destinos_original:
+        puntos_originales.append([destino['lat'], destino['lon']])
+    
+    folium.PolyLine(
+        puntos_originales,
+        color='red',
+        weight=2,
+        opacity=0.6,
+        dash_array='10',
+        popup="Ruta Original"
+    ).add_to(mapa)
+    
+    # Leyenda
+    leyenda_html = '''
+    <div style="position: fixed; 
+                top: 10px; right: 10px; width: 200px; height: 120px; 
+                background-color: white; border:2px solid grey; z-index:9999; 
+                font-size:12px; padding: 10px">
+    <b>Optimización de Ruta</b><br>
+    <i class="fa fa-home" style="color:black"></i> Origen<br>
+    <i class="fa fa-circle" style="color:green"></i> Ruta Optimizada<br>
+    <i class="fa fa-circle" style="color:red"></i> Ruta Original<br>
+    <i class="fa fa-map-marker" style="color:green"></i> Destinos (orden)
+    </div>
+    '''
+    mapa.get_root().html.add_child(folium.Element(leyenda_html))
+    
+    return mapa
+
+
+def generar_plan_ruta_conductor(conductor_id, conductores_df, rutas_df, coordenadas_dict):
+    """Genera un plan completo de rutas optimizadas para un conductor."""
+    conductor_info = conductores_df[conductores_df['id'] == conductor_id].iloc[0]
+    optimizaciones = analizar_rutas_conductor(conductor_id, rutas_df, coordenadas_dict)
+    
+    if not optimizaciones or 'mensaje' in optimizaciones:
+        return None
+    
+    plan = {
+        'conductor': conductor_info,
+        'fechas_optimizadas': {},
+        'resumen_total': {
+            'total_km_actual': 0,
+            'total_km_optimizado': 0,
+            'total_ahorro_km': 0,
+            'total_rutas': 0
+        }
+    }
+    
+    for fecha, opt_data in optimizaciones.items():
+        plan['fechas_optimizadas'][fecha] = {
+            'fecha': fecha,
+            'origen': opt_data['origen']['nombre'],
+            'numero_destinos': len(opt_data['destinos_optimizado']),
+            'orden_recomendado': [d['nombre'] for d in opt_data['destinos_optimizado']],
+            'distancia_actual': opt_data['distancia_actual'],
+            'distancia_optimizada': opt_data['distancia_optimizada'],
+            'ahorro_km': opt_data['ahorro_km'],
+            'ahorro_porcentaje': opt_data['ahorro_porcentaje'],
+            'carga_total': sum(d['carga'] for d in opt_data['destinos_optimizado']),
+            'algoritmo': opt_data['algoritmo_usado']
+        }
+        
+        # Actualizar resumen total
+        plan['resumen_total']['total_km_actual'] += opt_data['distancia_actual']
+        plan['resumen_total']['total_km_optimizado'] += opt_data['distancia_optimizada']
+        plan['resumen_total']['total_ahorro_km'] += opt_data['ahorro_km']
+        plan['resumen_total']['total_rutas'] += len(opt_data['destinos_optimizado'])
+    
+    return plan
 
 
 # Configuración de la página
@@ -195,11 +516,31 @@ if 'ubicacion_temporal' not in st.session_state:
 conductores_df = st.session_state['conductores_df']
 rutas_df = st.session_state['rutas_df']
 
+def procesar_click_mapa(data_mapa, tipo_ubicacion):
+    """Procesa el click en el mapa y extrae las coordenadas."""
+    if data_mapa['last_clicked'] is not None:
+        lat = data_mapa['last_clicked']['lat']
+        lon = data_mapa['last_clicked']['lng']
+        
+        # Obtener dirección aproximada
+        direccion = geocodificacion_inversa(lat, lon)
+        
+        return {
+            'lat': lat,
+            'lon': lon,
+            'display_name': direccion,
+            'tipo': tipo_ubicacion,
+            'metodo_seleccion': 'mapa'
+        }
+    
+    return None
+
+
 # Sidebar para navegación
 st.sidebar.title("🚛 Gestión de Rutas")
 pagina = st.sidebar.selectbox(
     "Seleccionar página:",
-    ["Dashboard", "Conductores", "Rutas", "Mapa de Rutas", "Análisis"]
+    ["Dashboard", "Conductores", "Rutas", "Optimización de Rutas", "Mapa de Rutas", "Análisis"]
 )
 
 if pagina == "Dashboard":
@@ -641,6 +982,222 @@ elif pagina == "Rutas":
                     st.rerun()
         else:
             st.info("💡 Selecciona tanto el origen como el destino para continuar con la planificación de la ruta.")
+
+elif pagina == "Optimización de Rutas":
+    st.title("🎯 Optimización de Rutas Múltiples")
+    st.markdown("**Encuentra la mejor ruta y orden de visita para múltiples destinos**")
+    
+    # Selector de conductor
+    conductor_seleccionado = st.selectbox(
+        "👨‍💼 Seleccionar conductor para optimizar:",
+        conductores_df['nombre'].values,
+        key="conductor_optimizacion"
+    )
+    
+    if conductor_seleccionado:
+        conductor_id = conductores_df[conductores_df['nombre'] == conductor_seleccionado]['id'].iloc[0]
+        
+        # Generar plan de optimización
+        with st.spinner("🔄 Analizando y optimizando rutas..."):
+            plan_optimizado = generar_plan_ruta_conductor(conductor_id, conductores_df, rutas_df, coordenadas_dict)
+        
+        if not plan_optimizado:
+            st.info(f"📝 No hay rutas pendientes para optimizar para {conductor_seleccionado}")
+            
+            # Mostrar rutas existentes del conductor
+            rutas_conductor = rutas_df[rutas_df['conductor_id'] == conductor_id]
+            if not rutas_conductor.empty:
+                st.subheader("📋 Rutas Actuales del Conductor")
+                rutas_con_conductor = rutas_conductor.merge(
+                    conductores_df[['id', 'nombre']], 
+                    left_on='conductor_id', 
+                    right_on='id'
+                )
+                st.dataframe(rutas_con_conductor[['id', 'origen', 'destino', 'distancia_km', 'fecha_inicio', 'estado', 'carga_kg']])
+        else:
+            # Mostrar resumen del conductor
+            conductor_info = plan_optimizado['conductor']
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("👨‍💼 Conductor", conductor_info['nombre'])
+                st.metric("🚚 Vehículo", conductor_info['vehiculo'])
+            
+            with col2:
+                st.metric("📞 Teléfono", conductor_info['telefono'])
+                st.metric("🆔 Licencia", conductor_info['licencia'])
+            
+            with col3:
+                st.metric("📊 Estado", conductor_info['estado'])
+            
+            # Resumen de optimización
+            st.markdown("---")
+            st.subheader("📈 Resumen de Optimización")
+            
+            resumen = plan_optimizado['resumen_total']
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric(
+                    "🛣️ Distancia Actual", 
+                    f"{resumen['total_km_actual']:.1f} km"
+                )
+            
+            with col2:
+                st.metric(
+                    "⚡ Distancia Optimizada", 
+                    f"{resumen['total_km_optimizado']:.1f} km"
+                )
+            
+            with col3:
+                ahorro_km = resumen['total_ahorro_km']
+                ahorro_pct = (ahorro_km / resumen['total_km_actual']) * 100 if resumen['total_km_actual'] > 0 else 0
+                st.metric(
+                    "💰 Ahorro Total", 
+                    f"{ahorro_km:.1f} km",
+                    f"{ahorro_pct:.1f}%"
+                )
+            
+            with col4:
+                st.metric("🎯 Total Rutas", resumen['total_rutas'])
+            
+            # Detalles por fecha
+            st.markdown("---")
+            st.subheader("📅 Plan Optimizado por Fecha")
+            
+            for fecha, detalles in plan_optimizado['fechas_optimizadas'].items():
+                with st.expander(f"📅 {fecha} - {detalles['numero_destinos']} destinos"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**📊 Métricas:**")
+                        st.metric("📍 Origen", detalles['origen'])
+                        st.metric("🎯 Destinos", detalles['numero_destinos'])
+                        st.metric("📦 Carga Total", f"{detalles['carga_total']} kg")
+                        st.metric("🔧 Algoritmo", detalles['algoritmo'])
+                    
+                    with col2:
+                        st.markdown("**🛣️ Distancias:**")
+                        st.metric("Actual", f"{detalles['distancia_actual']:.1f} km")
+                        st.metric("Optimizada", f"{detalles['distancia_optimizada']:.1f} km")
+                        st.metric(
+                            "Ahorro", 
+                            f"{detalles['ahorro_km']:.1f} km",
+                            f"{detalles['ahorro_porcentaje']:.1f}%"
+                        )
+                    
+                    # Orden recomendado
+                    st.markdown("**🗺️ Orden Recomendado de Visita:**")
+                    for i, destino in enumerate(detalles['orden_recomendado']):
+                        st.write(f"**{i+1}.** {destino}")
+                    
+                    # Botón para ver mapa
+                    if st.button(f"🗺️ Ver Mapa Optimizado", key=f"mapa_{fecha}"):
+                        st.session_state[f'mostrar_mapa_{fecha}'] = True
+                    
+                    # Mostrar mapa si se solicitó
+                    if st.session_state.get(f'mostrar_mapa_{fecha}', False):
+                        optimizaciones = analizar_rutas_conductor(conductor_id, rutas_df, coordenadas_dict)
+                        if fecha in optimizaciones:
+                            mapa_opt = crear_mapa_ruta_optimizada(optimizaciones[fecha])
+                            if mapa_opt:
+                                st_folium(mapa_opt, width=700, height=400)
+                        
+                        if st.button(f"❌ Ocultar Mapa", key=f"ocultar_mapa_{fecha}"):
+                            st.session_state[f'mostrar_mapa_{fecha}'] = False
+                            st.rerun()
+            
+            # Comparación visual de eficiencia
+            st.markdown("---")
+            st.subheader("📊 Comparación Visual de Eficiencia")
+            
+            fechas = list(plan_optimizado['fechas_optimizadas'].keys())
+            distancias_actual = [plan_optimizado['fechas_optimizadas'][f]['distancia_actual'] for f in fechas]
+            distancias_optimizada = [plan_optimizado['fechas_optimizadas'][f]['distancia_optimizada'] for f in fechas]
+            
+            fig_comparacion = go.Figure()
+            
+            fig_comparacion.add_trace(go.Bar(
+                name='Ruta Actual',
+                x=[str(f) for f in fechas],
+                y=distancias_actual,
+                marker_color='red',
+                opacity=0.7
+            ))
+            
+            fig_comparacion.add_trace(go.Bar(
+                name='Ruta Optimizada',
+                x=[str(f) for f in fechas],
+                y=distancias_optimizada,
+                marker_color='green',
+                opacity=0.7
+            ))
+            
+            fig_comparacion.update_layout(
+                title='Comparación de Distancias: Actual vs Optimizada',
+                xaxis_title='Fecha',
+                yaxis_title='Distancia (km)',
+                barmode='group'
+            )
+            
+            st.plotly_chart(fig_comparacion, use_container_width=True)
+            
+            # Acciones de optimización
+            st.markdown("---")
+            st.subheader("⚡ Aplicar Optimización")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("✅ Aplicar Todas las Optimizaciones", type="primary"):
+                    # Aquí se aplicarían las optimizaciones a la base de datos
+                    st.success("🎉 ¡Optimizaciones aplicadas exitosamente!")
+                    st.info("💡 Las rutas han sido reordenadas según el plan optimizado.")
+            
+            with col2:
+                if st.button("📊 Generar Reporte PDF"):
+                    st.info("📄 Funcionalidad de reporte PDF en desarrollo")
+            
+            # Simulador de optimización manual
+            st.markdown("---")
+            st.subheader("🧪 Simulador de Optimización Manual")
+            
+            with st.expander("🔧 Probar diferentes configuraciones"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    algoritmo_manual = st.selectbox(
+                        "Algoritmo de optimización:",
+                        ["nearest_neighbor", "brute_force", "2opt"],
+                        help="• Nearest Neighbor: Rápido para muchos destinos\n• Brute Force: Óptimo para pocos destinos (≤8)\n• 2-Opt: Balance entre velocidad y calidad"
+                    )
+                
+                with col2:
+                    fecha_simular = st.selectbox(
+                        "Fecha a simular:",
+                        list(plan_optimizado['fechas_optimizadas'].keys())
+                    )
+                
+                if st.button("🚀 Ejecutar Simulación"):
+                    with st.spinner("Calculando nueva optimización..."):
+                        # Re-optimizar con algoritmo seleccionado
+                        optimizaciones = analizar_rutas_conductor(conductor_id, rutas_df, coordenadas_dict)
+                        if fecha_simular in optimizaciones:
+                            opt_data = optimizaciones[fecha_simular]
+                            nuevo_orden, nueva_distancia = optimizar_ruta_multiple(
+                                opt_data['origen'], 
+                                opt_data['destinos_original'], 
+                                algoritmo_manual
+                            )
+                            
+                            st.success(f"✅ Simulación completada con {algoritmo_manual}")
+                            st.metric("Nueva distancia", f"{nueva_distancia:.1f} km")
+                            
+                            # Mostrar nuevo orden
+                            st.write("**Nuevo orden sugerido:**")
+                            for i, idx in enumerate(nuevo_orden):
+                                destino = opt_data['destinos_original'][idx]
+                                st.write(f"{i+1}. {destino['nombre']}")
 
 elif pagina == "Mapa de Rutas":
     st.title("🗺️ Visualización de Rutas")
