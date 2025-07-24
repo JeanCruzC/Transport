@@ -430,44 +430,20 @@ st.set_page_config(
     layout="wide"
 )
 
-# Función para inicializar datos de ejemplo
+# Función para inicializar datos de ejemplo (solo rutas y coordenadas)
 @st.cache_data
 def load_sample_data():
-    # Datos de conductores
-    conductores = pd.DataFrame({
-        'id': range(1, 11),
-        'nombre': ['Juan Pérez', 'María García', 'Carlos López', 'Ana Martín', 'Luis Rodríguez',
-                  'Carmen Sánchez', 'Pedro González', 'Laura Fernández', 'Miguel Torres', 'Isabel Ruiz'],
-        'licencia': ['A123456', 'B789012', 'C345678', 'D901234', 'E567890',
-                    'F123456', 'G789012', 'H345678', 'I901234', 'J567890'],
-        'telefono': ['555-0101', '555-0102', '555-0103', '555-0104', '555-0105',
-                    '555-0106', '555-0107', '555-0108', '555-0109', '555-0110'],
-        'vehiculo': ['Camión A', 'Furgoneta B', 'Camión C', 'Van D', 'Camión E',
-                    'Furgoneta F', 'Camión G', 'Van H', 'Camión I', 'Furgoneta J'],
-        'estado': ['Activo', 'Activo', 'En ruta', 'Activo', 'En ruta',
-                  'Descanso', 'Activo', 'En ruta', 'Activo', 'Mantenimiento']
-    })
-    
-    # Datos de rutas
+    # Solo datos de rutas de ejemplo (se eliminarán cuando se carguen conductores)
     rutas = pd.DataFrame({
-        'id': range(1, 21),
-        'conductor_id': [1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 5, 6, 7],
-        'origen': ['Lima', 'Arequipa', 'Cusco', 'Lima', 'Trujillo', 'Lima', 'Piura', 'Iquitos', 
-                  'Huancayo', 'Chiclayo', 'Lima', 'Tacna', 'Ayacucho', 'Callao', 'Ica', 
-                  'Cajamarca', 'Puno', 'Tumbes', 'Huánuco', 'Moquegua'],
-        'destino': ['Arequipa', 'Lima', 'Lima', 'Cusco', 'Lima', 'Trujillo', 'Lima', 'Lima',
-                   'Lima', 'Lima', 'Chiclayo', 'Lima', 'Lima', 'Ica', 'Lima',
-                   'Lima', 'Cusco', 'Piura', 'Lima', 'Tacna'],
-        'distancia_km': [1000, 1000, 1100, 1100, 560, 560, 970, 1800, 300, 770,
-                        770, 1200, 550, 150, 300, 850, 390, 1300, 410, 450],
-        'fecha_inicio': pd.date_range('2024-01-01', periods=20, freq='2D'),
-        'fecha_fin': pd.date_range('2024-01-02', periods=20, freq='2D'),
-        'estado': ['Completada', 'En progreso', 'Completada', 'Planificada', 'En progreso',
-                  'Completada', 'Planificada', 'Completada', 'En progreso', 'Completada',
-                  'Planificada', 'Completada', 'En progreso', 'Completada', 'Planificada',
-                  'En progreso', 'Completada', 'Planificada', 'En progreso', 'Completada'],
-        'carga_kg': [5000, 7500, 3200, 8000, 4500, 6000, 5500, 2800, 4000, 6500,
-                    3800, 7200, 4200, 5800, 3500, 6800, 4800, 5200, 3900, 6200]
+        'id': [],
+        'conductor_id': [],
+        'origen': [],
+        'destino': [],
+        'distancia_km': [],
+        'fecha_inicio': [],
+        'fecha_fin': [],
+        'estado': [],
+        'carga_kg': []
     })
     
     # Coordenadas de ciudades principales del Perú
@@ -491,15 +467,83 @@ def load_sample_data():
         'Moquegua': [-17.1934, -70.9348]
     }
     
-    return conductores, rutas, coordenadas
+    return rutas, coordenadas
+
+
+def cargar_archivo_conductores(archivo_cargado):
+    """
+    Carga archivo Excel o CSV con datos de conductores.
+    
+    Columnas requeridas:
+    - id: Identificador único del conductor
+    - nombre: Nombre completo del conductor
+    - licencia: Número de licencia de conducir
+    - telefono: Número de teléfono
+    - vehiculo: Vehículo asignado
+    - estado: Estado actual (Activo, En ruta, Descanso, Mantenimiento)
+    """
+    try:
+        # Determinar tipo de archivo
+        if archivo_cargado.name.endswith('.csv'):
+            df = pd.read_csv(archivo_cargado)
+        elif archivo_cargado.name.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(archivo_cargado)
+        else:
+            return None, "❌ Formato de archivo no soportado. Use .csv, .xlsx o .xls"
+        
+        # Validar columnas requeridas
+        columnas_requeridas = ['id', 'nombre', 'licencia', 'telefono', 'vehiculo', 'estado']
+        columnas_faltantes = [col for col in columnas_requeridas if col not in df.columns]
+        
+        if columnas_faltantes:
+            return None, f"❌ Columnas faltantes: {', '.join(columnas_faltantes)}"
+        
+        # Validar que no haya IDs duplicados
+        if df['id'].duplicated().any():
+            return None, "❌ Error: IDs de conductores duplicados encontrados"
+        
+        # Validar estados válidos
+        estados_validos = ['Activo', 'En ruta', 'Descanso', 'Mantenimiento']
+        estados_invalidos = df[~df['estado'].isin(estados_validos)]['estado'].unique()
+        
+        if len(estados_invalidos) > 0:
+            return None, f"❌ Estados inválidos encontrados: {', '.join(estados_invalidos)}. Estados válidos: {', '.join(estados_validos)}"
+        
+        # Limpiar datos
+        df['nombre'] = df['nombre'].astype(str).str.strip()
+        df['licencia'] = df['licencia'].astype(str).str.strip()
+        df['telefono'] = df['telefono'].astype(str).str.strip()
+        df['vehiculo'] = df['vehiculo'].astype(str).str.strip()
+        df['id'] = df['id'].astype(int)
+        
+        return df, f"✅ Archivo cargado exitosamente: {len(df)} conductores"
+        
+    except Exception as e:
+        return None, f"❌ Error al procesar archivo: {str(e)}"
+
+
+def generar_plantilla_conductores():
+    """Genera una plantilla de ejemplo para descargar."""
+    plantilla = pd.DataFrame({
+        'id': [1, 2, 3, 4, 5],
+        'nombre': ['Juan Pérez', 'María García', 'Carlos López', 'Ana Martín', 'Luis Rodríguez'],
+        'licencia': ['A123456', 'B789012', 'C345678', 'D901234', 'E567890'],
+        'telefono': ['555-0101', '555-0102', '555-0103', '555-0104', '555-0105'],
+        'vehiculo': ['Camión Mercedes', 'Furgoneta Ford', 'Camión Volvo', 'Van Toyota', 'Camión Scania'],
+        'estado': ['Activo', 'Activo', 'En ruta', 'Activo', 'Descanso']
+    })
+    return plantilla
 
 # Cargar datos y almacenar en session_state
-conductores_default, rutas_default, coordenadas_dict = load_sample_data()
+rutas_default, coordenadas_dict = load_sample_data()
 
+# Inicializar DataFrames en session_state
 if 'conductores_df' not in st.session_state:
-    st.session_state['conductores_df'] = conductores_default.copy()
+    st.session_state['conductores_df'] = pd.DataFrame(columns=['id', 'nombre', 'licencia', 'telefono', 'vehiculo', 'estado'])
 if 'rutas_df' not in st.session_state:
     st.session_state['rutas_df'] = rutas_default.copy()
+if 'conductores_cargados' not in st.session_state:
+    st.session_state['conductores_cargados'] = False
 if 'direccion_origen_seleccionada' not in st.session_state:
     st.session_state['direccion_origen_seleccionada'] = None
 if 'direccion_destino_seleccionada' not in st.session_state:
@@ -515,6 +559,25 @@ if 'ubicacion_temporal' not in st.session_state:
 
 conductores_df = st.session_state['conductores_df']
 rutas_df = st.session_state['rutas_df']
+
+# Verificar si hay conductores cargados
+if not st.session_state['conductores_cargados'] or conductores_df.empty:
+    st.warning("⚠️ No hay conductores cargados. Por favor, carga un archivo de conductores primero.")
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("⚠️ **Cargar Conductores Requerido**")
+    st.sidebar.markdown("Ve a la página 'Conductores' para cargar tu archivo.")
+    
+    # Restringir navegación si no hay conductores
+    paginas_disponibles = ["Conductores"]
+else:
+    paginas_disponibles = ["Dashboard", "Conductores", "Rutas", "Optimización de Rutas", "Mapa de Rutas", "Análisis"]
+
+# Sidebar para navegación
+st.sidebar.title("🚛 Gestión de Rutas")
+pagina = st.sidebar.selectbox(
+    "Seleccionar página:",
+    paginas_disponibles
+)
 
 def procesar_click_mapa(data_mapa, tipo_ubicacion):
     """Procesa el click en el mapa y extrae las coordenadas."""
@@ -535,15 +598,235 @@ def procesar_click_mapa(data_mapa, tipo_ubicacion):
     
     return None
 
+if pagina == "Conductores":
+    st.title("👨‍💼 Gestión de Conductores")
+    
+    # Sección de carga de archivo
+    st.subheader("📁 Cargar Datos de Conductores")
+    
+    # Información sobre el formato requerido
+    with st.expander("ℹ️ Información sobre el formato de archivo"):
+        st.markdown("""
+        **Columnas requeridas en el archivo:**
+        
+        | Columna | Descripción | Ejemplo |
+        |---------|-------------|---------|
+        | `id` | Identificador único (número entero) | 1, 2, 3... |
+        | `nombre` | Nombre completo del conductor | Juan Pérez |
+        | `licencia` | Número de licencia de conducir | A123456 |
+        | `telefono` | Número de teléfono | +51-999-123-456 |
+        | `vehiculo` | Vehículo asignado | Camión Mercedes |
+        | `estado` | Estado actual | Activo, En ruta, Descanso, Mantenimiento |
+        
+        **Formatos soportados:** .csv, .xlsx, .xls
+        """)
+    
+    # Descargar plantilla
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📥 Descargar Plantilla Excel", type="secondary"):
+            plantilla = generar_plantilla_conductores()
+            # Convertir a Excel en memoria
+            import io
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                plantilla.to_excel(writer, index=False, sheet_name='Conductores')
+            
+            st.download_button(
+                label="💾 Descargar plantilla_conductores.xlsx",
+                data=buffer.getvalue(),
+                file_name="plantilla_conductores.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    
+    with col2:
+        if st.button("📥 Descargar Plantilla CSV", type="secondary"):
+            plantilla = generar_plantilla_conductores()
+            csv = plantilla.to_csv(index=False)
+            st.download_button(
+                label="💾 Descargar plantilla_conductores.csv",
+                data=csv,
+                file_name="plantilla_conductores.csv",
+                mime="text/csv"
+            )
+    
+    st.markdown("---")
+    
+    # Upload de archivo
+    archivo_cargado = st.file_uploader(
+        "📂 Selecciona tu archivo de conductores",
+        type=['csv', 'xlsx', 'xls'],
+        help="Carga un archivo CSV o Excel con los datos de tus conductores"
+    )
+    
+    if archivo_cargado is not None:
+        with st.spinner("🔄 Procesando archivo..."):
+            conductores_nuevos, mensaje = cargar_archivo_conductores(archivo_cargado)
+        
+        if conductores_nuevos is not None:
+            st.success(mensaje)
+            
+            # Mostrar vista previa
+            st.subheader("👀 Vista Previa de Datos Cargados")
+            st.dataframe(conductores_nuevos, use_container_width=True)
+            
+            # Botones de acción
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("✅ Confirmar y Usar Datos", type="primary"):
+                    st.session_state['conductores_df'] = conductores_nuevos
+                    st.session_state['conductores_cargados'] = True
+                    st.success("🎉 ¡Datos de conductores cargados exitosamente!")
+                    st.balloons()
+                    st.rerun()
+            
+            with col2:
+                if st.button("🔄 Agregar a Existentes"):
+                    if not st.session_state['conductores_df'].empty:
+                        # Verificar IDs duplicados
+                        ids_existentes = set(st.session_state['conductores_df']['id'])
+                        ids_nuevos = set(conductores_nuevos['id'])
+                        duplicados = ids_existentes.intersection(ids_nuevos)
+                        
+                        if duplicados:
+                            st.error(f"❌ IDs duplicados encontrados: {duplicados}")
+                        else:
+                            st.session_state['conductores_df'] = pd.concat([
+                                st.session_state['conductores_df'],
+                                conductores_nuevos
+                            ], ignore_index=True)
+                            st.session_state['conductores_cargados'] = True
+                            st.success("✅ Conductores agregados exitosamente!")
+                            st.rerun()
+                    else:
+                        st.session_state['conductores_df'] = conductores_nuevos
+                        st.session_state['conductores_cargados'] = True
+                        st.success("✅ Primeros conductores cargados!")
+                        st.rerun()
+            
+            with col3:
+                if st.button("❌ Cancelar"):
+                    st.rerun()
+        else:
+            st.error(mensaje)
+    
+    # Mostrar conductores actuales si existen
+    if not conductores_df.empty:
+        st.markdown("---")
+        st.subheader("📋 Conductores Actuales")
+        
+        # Estadísticas rápidas
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Conductores", len(conductores_df))
+        with col2:
+            activos = len(conductores_df[conductores_df['estado'] == 'Activo'])
+            st.metric("Activos", activos)
+        with col3:
+            en_ruta = len(conductores_df[conductores_df['estado'] == 'En ruta'])
+            st.metric("En Ruta", en_ruta)
+        with col4:
+            descanso = len(conductores_df[conductores_df['estado'] == 'Descanso'])
+            st.metric("En Descanso", descanso)
+        
+        # Filtros
+        col1, col2 = st.columns(2)
+        with col1:
+            filtro_estado = st.selectbox("Filtrar por estado:", ["Todos"] + list(conductores_df['estado'].unique()))
+        with col2:
+            filtro_nombre = st.text_input("🔍 Buscar por nombre:", placeholder="Ingresa nombre del conductor")
+        
+        # Aplicar filtros
+        conductores_filtrados = conductores_df.copy()
+        if filtro_estado != "Todos":
+            conductores_filtrados = conductores_filtrados[conductores_filtrados['estado'] == filtro_estado]
+        if filtro_nombre:
+            conductores_filtrados = conductores_filtrados[
+                conductores_filtrados['nombre'].str.contains(filtro_nombre, case=False, na=False)
+            ]
+        
+        # Mostrar tabla filtrada
+        st.dataframe(conductores_filtrados, use_container_width=True)
+        
+        # Acciones adicionales
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🗑️ Limpiar Todos los Conductores"):
+                if st.button("⚠️ Confirmar Eliminación", type="secondary"):
+                    st.session_state['conductores_df'] = pd.DataFrame(columns=['id', 'nombre', 'licencia', 'telefono', 'vehiculo', 'estado'])
+                    st.session_state['conductores_cargados'] = False
+                    st.warning("🗑️ Todos los conductores han sido eliminados")
+                    st.rerun()
+        
+        with col2:
+            if st.button("📊 Exportar Conductores"):
+                csv = conductores_df.to_csv(index=False)
+                st.download_button(
+                    label="💾 Descargar conductores_actual.csv",
+                    data=csv,
+                    file_name="conductores_actual.csv",
+                    mime="text/csv"
+                )
+        
+        with col3:
+            if st.button("➕ Agregar Conductor Manual"):
+                st.session_state['mostrar_form_manual'] = True
+        
+        # Formulario manual (si se solicita)
+        if st.session_state.get('mostrar_form_manual', False):
+            with st.expander("➕ Agregar Conductor Manualmente", expanded=True):
+                with st.form("nuevo_conductor_manual"):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        nuevo_id = st.number_input("ID", min_value=1, value=int(conductores_df['id'].max()) + 1 if not conductores_df.empty else 1)
+                        nombre = st.text_input("Nombre completo")
+                        licencia = st.text_input("Número de licencia")
+                    with col2:
+                        telefono = st.text_input("Teléfono")
+                        vehiculo = st.text_input("Vehículo asignado")
+                        estado = st.selectbox("Estado", ["Activo", "En ruta", "Descanso", "Mantenimiento"])
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        submitted = st.form_submit_button("✅ Agregar Conductor", type="primary")
+                    with col2:
+                        cancelar = st.form_submit_button("❌ Cancelar")
+                    
+                    if submitted and nombre and licencia:
+                        # Verificar ID único
+                        if nuevo_id in conductores_df['id'].values:
+                            st.error(f"❌ ID {nuevo_id} ya existe. Use un ID diferente.")
+                        else:
+                            nuevo_conductor = {
+                                'id': nuevo_id,
+                                'nombre': nombre,
+                                'licencia': licencia,
+                                'telefono': telefono,
+                                'vehiculo': vehiculo,
+                                'estado': estado
+                            }
+                            st.session_state['conductores_df'] = pd.concat([
+                                st.session_state['conductores_df'],
+                                pd.DataFrame([nuevo_conductor])
+                            ], ignore_index=True)
+                            st.session_state['mostrar_form_manual'] = False
+                            st.success(f"✅ Conductor {nombre} agregado exitosamente!")
+                            st.rerun()
+                    
+                    if cancelar:
+                        st.session_state['mostrar_form_manual'] = False
+                        st.rerun()
+    else:
+        st.info("👆 Carga un archivo con los datos de tus conductores para comenzar a usar la aplicación.")
 
-# Sidebar para navegación
-st.sidebar.title("🚛 Gestión de Rutas")
-pagina = st.sidebar.selectbox(
-    "Seleccionar página:",
-    ["Dashboard", "Conductores", "Rutas", "Optimización de Rutas", "Mapa de Rutas", "Análisis"]
-)
-
-if pagina == "Dashboard":
+elif pagina == "Dashboard":
+    if conductores_df.empty:
+        st.title("📊 Dashboard de Transporte")
+        st.warning("⚠️ No hay conductores cargados. Ve a la página 'Conductores' para cargar tu archivo.")
+        st.stop()
     st.title("📊 Dashboard de Transporte")
     
     # Métricas principales
@@ -652,6 +935,10 @@ elif pagina == "Conductores":
                 st.success(f"Conductor {nombre} agregado exitosamente!")
 
 elif pagina == "Rutas":
+    if conductores_df.empty:
+        st.title("🗺️ Gestión de Rutas")
+        st.warning("⚠️ No hay conductores cargados. Ve a la página 'Conductores' para cargar tu archivo.")
+        st.stop()
     st.title("🗺️ Gestión de Rutas")
     
     # Filtros
@@ -984,6 +1271,10 @@ elif pagina == "Rutas":
             st.info("💡 Selecciona tanto el origen como el destino para continuar con la planificación de la ruta.")
 
 elif pagina == "Optimización de Rutas":
+    if conductores_df.empty:
+        st.title("🎯 Optimización de Rutas Múltiples")
+        st.warning("⚠️ No hay conductores cargados. Ve a la página 'Conductores' para cargar tu archivo.")
+        st.stop()
     st.title("🎯 Optimización de Rutas Múltiples")
     st.markdown("**Encuentra la mejor ruta y orden de visita para múltiples destinos**")
     
@@ -1200,6 +1491,10 @@ elif pagina == "Optimización de Rutas":
                                 st.write(f"{i+1}. {destino['nombre']}")
 
 elif pagina == "Mapa de Rutas":
+    if conductores_df.empty:
+        st.title("🗺️ Visualización de Rutas")
+        st.warning("⚠️ No hay conductores cargados. Ve a la página 'Conductores' para cargar tu archivo.")
+        st.stop()
     st.title("🗺️ Visualización de Rutas")
     
     # Selector de conductor
@@ -1276,6 +1571,10 @@ elif pagina == "Mapa de Rutas":
     st_folium(mapa, width=700, height=500)
 
 elif pagina == "Análisis":
+    if conductores_df.empty:
+        st.title("📈 Análisis de Rendimiento")
+        st.warning("⚠️ No hay conductores cargados. Ve a la página 'Conductores' para cargar tu archivo.")
+        st.stop()
     st.title("📈 Análisis de Rendimiento")
     
     # Análisis de distancias
@@ -1353,3 +1652,14 @@ elif pagina == "Análisis":
 st.sidebar.markdown("---")
 st.sidebar.markdown("🚛 **Gestión de Rutas de Transporte**")
 st.sidebar.markdown("Desarrollado con Streamlit")
+
+# Información del estado de la aplicación en sidebar
+if st.session_state['conductores_cargados'] and not conductores_df.empty:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("✅ **Estado: Operativo**")
+    st.sidebar.metric("Conductores", len(conductores_df))
+    st.sidebar.metric("Rutas", len(rutas_df))
+else:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("⚠️ **Estado: Configuración**")
+    st.sidebar.markdown("Carga conductores para comenzar")
