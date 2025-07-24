@@ -74,8 +74,16 @@ def load_sample_data():
     
     return conductores, rutas, coordenadas
 
-# Cargar datos
-conductores_df, rutas_df, coordenadas_dict = load_sample_data()
+# Cargar datos y almacenar en session_state
+conductores_default, rutas_default, coordenadas_dict = load_sample_data()
+
+if 'conductores_df' not in st.session_state:
+    st.session_state['conductores_df'] = conductores_default.copy()
+if 'rutas_df' not in st.session_state:
+    st.session_state['rutas_df'] = rutas_default.copy()
+
+conductores_df = st.session_state['conductores_df']
+rutas_df = st.session_state['rutas_df']
 
 # Sidebar para navegación
 st.sidebar.title("🚛 Gestión de Rutas")
@@ -177,6 +185,19 @@ elif pagina == "Conductores":
             
             submitted = st.form_submit_button("Agregar Conductor")
             if submitted and nombre and licencia:
+                nuevo_id = int(st.session_state['conductores_df']['id'].max()) + 1 if not st.session_state['conductores_df'].empty else 1
+                nuevo_conductor = {
+                    'id': nuevo_id,
+                    'nombre': nombre,
+                    'licencia': licencia,
+                    'telefono': telefono,
+                    'vehiculo': vehiculo,
+                    'estado': estado
+                }
+                st.session_state['conductores_df'] = pd.concat([
+                    st.session_state['conductores_df'],
+                    pd.DataFrame([nuevo_conductor])
+                ], ignore_index=True)
                 st.success(f"Conductor {nombre} agregado exitosamente!")
 
 elif pagina == "Rutas":
@@ -240,6 +261,25 @@ elif pagina == "Rutas":
             
             submitted_ruta = st.form_submit_button("Planificar Ruta")
             if submitted_ruta:
+                conductor_id = st.session_state['conductores_df'][
+                    st.session_state['conductores_df']['nombre'] == conductor_seleccionado
+                ]['id'].iloc[0]
+                nuevo_id = int(st.session_state['rutas_df']['id'].max()) + 1 if not st.session_state['rutas_df'].empty else 1
+                nueva_ruta = {
+                    'id': nuevo_id,
+                    'conductor_id': conductor_id,
+                    'origen': origen_ruta,
+                    'destino': destino_ruta,
+                    'distancia_km': distancia_ruta,
+                    'fecha_inicio': pd.to_datetime(fecha_inicio_ruta),
+                    'fecha_fin': pd.to_datetime(fecha_inicio_ruta) + timedelta(days=1),
+                    'estado': 'Planificada',
+                    'carga_kg': carga_ruta
+                }
+                st.session_state['rutas_df'] = pd.concat([
+                    st.session_state['rutas_df'],
+                    pd.DataFrame([nueva_ruta])
+                ], ignore_index=True)
                 st.success(f"Ruta {origen_ruta} → {destino_ruta} planificada para {conductor_seleccionado}!")
 
 elif pagina == "Mapa de Rutas":
@@ -363,8 +403,9 @@ elif pagina == "Análisis":
         st.plotly_chart(fig_carga, use_container_width=True)
     
     # Análisis temporal
-    rutas_df['fecha_inicio'] = pd.to_datetime(rutas_df['fecha_inicio'])
-    rutas_temporales = rutas_df.groupby(rutas_df['fecha_inicio'].dt.date).size().reset_index(name='num_rutas')
+    rutas_temp = rutas_df.copy()
+    rutas_temp['fecha_inicio'] = pd.to_datetime(rutas_temp['fecha_inicio'])
+    rutas_temporales = rutas_temp.groupby(rutas_temp['fecha_inicio'].dt.date).size().reset_index(name='num_rutas')
     
     fig_temporal = px.line(
         rutas_temporales,
