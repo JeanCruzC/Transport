@@ -4,6 +4,37 @@ import folium
 from streamlit_folium import st_folium
 import plotly.express as px
 from datetime import timedelta
+import requests
+from math import radians, sin, cos, sqrt, atan2
+
+
+@st.cache_data
+def geocodificar_direccion(direccion: str):
+    """Devuelve posibles coincidencias para una dirección usando Nominatim."""
+    if not direccion:
+        return []
+    try:
+        respuesta = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": direccion, "format": "json", "limit": 5},
+            headers={"User-Agent": "streamlit-app"},
+            timeout=10,
+        )
+        respuesta.raise_for_status()
+        return respuesta.json()
+    except requests.RequestException:
+        return []
+
+
+def calcular_distancia(lat1, lon1, lat2, lon2):
+    """Calcula la distancia en kilómetros entre dos puntos."""
+    r = 6371.0
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    return r * c
 
 # Configuración de la página
 st.set_page_config(
@@ -82,6 +113,16 @@ if 'conductores_df' not in st.session_state:
     st.session_state['conductores_df'] = conductores_default.copy()
 if 'rutas_df' not in st.session_state:
     st.session_state['rutas_df'] = rutas_default.copy()
+if 'direccion_origen_seleccionada' not in st.session_state:
+    st.session_state['direccion_origen_seleccionada'] = None
+if 'direccion_destino_seleccionada' not in st.session_state:
+    st.session_state['direccion_destino_seleccionada'] = None
+if 'resultados_origen' not in st.session_state:
+    st.session_state['resultados_origen'] = []
+if 'resultados_destino' not in st.session_state:
+    st.session_state['resultados_destino'] = []
+if 'distancia_calculada' not in st.session_state:
+    st.session_state['distancia_calculada'] = None
 
 conductores_df = st.session_state['conductores_df']
 rutas_df = st.session_state['rutas_df']
@@ -249,39 +290,90 @@ elif pagina == "Rutas":
     
     # Formulario para agregar ruta
     with st.expander("➕ Planificar Nueva Ruta"):
-        with st.form("nueva_ruta"):
-            col1, col2 = st.columns(2)
-            with col1:
+        col_busqueda1, col_busqueda2 = st.columns(2)
+        with col_busqueda1:
+            direccion_origen = st.text_input("Dirección de origen", key="direccion_origen_input")
+            if st.button("Buscar Origen"):
+                with st.spinner("Buscando origen..."):
+                    st.session_state['resultados_origen'] = geocodificar_direccion(direccion_origen)
+        for i, res in enumerate(st.session_state.get('resultados_origen', [])):
+            st.write(res.get('display_name'))
+            if st.button("Seleccionar", key=f"sel_origen_{i}"):
+                st.session_state['direccion_origen_seleccionada'] = res
+                st.session_state['resultados_origen'] = []
+                st.success(f"Origen seleccionado: {res.get('display_name')}")
+
+        with col_busqueda2:
+            direccion_destino = st.text_input("Dirección de destino", key="direccion_destino_input")
+            if st.button("Buscar Destino"):
+                with st.spinner("Buscando destino..."):
+                    st.session_state['resultados_destino'] = geocodificar_direccion(direccion_destino)
+        for i, res in enumerate(st.session_state.get('resultados_destino', [])):
+            st.write(res.get('display_name'))
+            if st.button("Seleccionar", key=f"sel_destino_{i}"):
+                st.session_state['direccion_destino_seleccionada'] = res
+                st.session_state['resultados_destino'] = []
+                st.success(f"Destino seleccionado: {res.get('display_name')}")
+
+        origen_sel = st.session_state.get('direccion_origen_seleccionada')
+        destino_sel = st.session_state.get('direccion_destino_seleccionada')
+        if origen_sel:
+            st.info(f"Origen: {origen_sel.get('display_name')}")
+        if destino_sel:
+            st.info(f"Destino: {destino_sel.get('display_name')}")
+
+        if origen_sel and destino_sel:
+            lat1, lon1 = float(origen_sel['lat']), float(origen_sel['lon'])
+            lat2, lon2 = float(destino_sel['lat']), float(destino_sel['lon'])
+            distancia = calcular_distancia(lat1, lon1, lat2, lon2)
+            st.session_state['distancia_calculada'] = distancia
+            st.success(f"Distancia calculada: {distancia:.2f} km")
+
+            mapa_prev = folium.Map(location=[(lat1 + lat2) / 2, (lon1 + lon2) / 2], zoom_start=6)
+            folium.Marker([lat1, lon1], popup=origen_sel['display_name']).add_to(mapa_prev)
+            folium.Marker([lat2, lon2], popup=destino_sel['display_name']).add_to(mapa_prev)
+            folium.PolyLine([[lat1, lon1], [lat2, lon2]], color="blue", weight=3).add_to(mapa_prev)
+            st_folium(mapa_prev, width=700, height=400)
+
+            with st.form("nueva_ruta"):
                 conductor_seleccionado = st.selectbox("Conductor", conductores_df['nombre'].values)
-                origen_ruta = st.selectbox("Origen", list(coordenadas_dict.keys()))
-                destino_ruta = st.selectbox("Destino", list(coordenadas_dict.keys()))
-            with col2:
-                distancia_ruta = st.number_input("Distancia (km)", min_value=1, value=100)
+                distancia_ruta = st.number_input(
+                    "Distancia (km)", value=float(distancia), format="%.2f", disabled=True
+                )
                 carga_ruta = st.number_input("Carga (kg)", min_value=1, value=1000)
                 fecha_inicio_ruta = st.date_input("Fecha de inicio")
-            
-            submitted_ruta = st.form_submit_button("Planificar Ruta")
-            if submitted_ruta:
-                conductor_id = st.session_state['conductores_df'][
-                    st.session_state['conductores_df']['nombre'] == conductor_seleccionado
-                ]['id'].iloc[0]
-                nuevo_id = int(st.session_state['rutas_df']['id'].max()) + 1 if not st.session_state['rutas_df'].empty else 1
-                nueva_ruta = {
-                    'id': nuevo_id,
-                    'conductor_id': conductor_id,
-                    'origen': origen_ruta,
-                    'destino': destino_ruta,
-                    'distancia_km': distancia_ruta,
-                    'fecha_inicio': pd.to_datetime(fecha_inicio_ruta),
-                    'fecha_fin': pd.to_datetime(fecha_inicio_ruta) + timedelta(days=1),
-                    'estado': 'Planificada',
-                    'carga_kg': carga_ruta
-                }
-                st.session_state['rutas_df'] = pd.concat([
-                    st.session_state['rutas_df'],
-                    pd.DataFrame([nueva_ruta])
-                ], ignore_index=True)
-                st.success(f"Ruta {origen_ruta} → {destino_ruta} planificada para {conductor_seleccionado}!")
+
+                submitted_ruta = st.form_submit_button("Planificar Ruta")
+                if submitted_ruta:
+                    conductor_id = st.session_state['conductores_df'][
+                        st.session_state['conductores_df']['nombre'] == conductor_seleccionado
+                    ]['id'].iloc[0]
+                    nuevo_id = int(st.session_state['rutas_df']['id'].max()) + 1 if not st.session_state['rutas_df'].empty else 1
+                    origen_nombre = origen_sel['display_name']
+                    destino_nombre = destino_sel['display_name']
+                    coordenadas_dict[origen_nombre] = [lat1, lon1]
+                    coordenadas_dict[destino_nombre] = [lat2, lon2]
+                    nueva_ruta = {
+                        'id': nuevo_id,
+                        'conductor_id': conductor_id,
+                        'origen': origen_nombre,
+                        'destino': destino_nombre,
+                        'distancia_km': distancia,
+                        'fecha_inicio': pd.to_datetime(fecha_inicio_ruta),
+                        'fecha_fin': pd.to_datetime(fecha_inicio_ruta) + timedelta(days=1),
+                        'estado': 'Planificada',
+                        'carga_kg': carga_ruta
+                    }
+                    st.session_state['rutas_df'] = pd.concat([
+                        st.session_state['rutas_df'],
+                        pd.DataFrame([nueva_ruta])
+                    ], ignore_index=True)
+                    st.success(
+                        f"Ruta {origen_nombre} → {destino_nombre} planificada para {conductor_seleccionado}!"
+                    )
+                    st.session_state['direccion_origen_seleccionada'] = None
+                    st.session_state['direccion_destino_seleccionada'] = None
+                    st.session_state['distancia_calculada'] = None
 
 elif pagina == "Mapa de Rutas":
     st.title("🗺️ Visualización de Rutas")
