@@ -4,6 +4,7 @@ import folium
 from streamlit_folium import st_folium
 import plotly.express as px
 from datetime import timedelta
+import math
 
 # Configuración de la página
 st.set_page_config(
@@ -85,6 +86,21 @@ if 'rutas_df' not in st.session_state:
 
 conductores_df = st.session_state['conductores_df']
 rutas_df = st.session_state['rutas_df']
+
+# Función para calcular distancia utilizando la fórmula de Haversine
+def calcular_distancia(origen: str, destino: str) -> float:
+    """Devuelve la distancia en kilómetros entre dos ciudades."""
+    if origen not in coordenadas_dict or destino not in coordenadas_dict:
+        return 0.0
+    lat1, lon1 = coordenadas_dict[origen]
+    lat2, lon2 = coordenadas_dict[destino]
+    R = 6371  # Radio de la Tierra en km
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return round(R * c, 2)
 
 # Sidebar para navegación
 st.sidebar.title("🚛 Gestión de Rutas")
@@ -256,7 +272,8 @@ elif pagina == "Rutas":
                 origen_ruta = st.selectbox("Origen", list(coordenadas_dict.keys()))
                 destino_ruta = st.selectbox("Destino", list(coordenadas_dict.keys()))
             with col2:
-                distancia_ruta = st.number_input("Distancia (km)", min_value=1, value=100)
+                distancia_calculada = calcular_distancia(origen_ruta, destino_ruta)
+                st.number_input("Distancia (km)", value=distancia_calculada, disabled=True)
                 carga_ruta = st.number_input("Carga (kg)", min_value=1, value=1000)
                 fecha_inicio_ruta = st.date_input("Fecha de inicio")
             
@@ -271,7 +288,7 @@ elif pagina == "Rutas":
                     'conductor_id': conductor_id,
                     'origen': origen_ruta,
                     'destino': destino_ruta,
-                    'distancia_km': distancia_ruta,
+                    'distancia_km': distancia_calculada,
                     'fecha_inicio': pd.to_datetime(fecha_inicio_ruta),
                     'fecha_fin': pd.to_datetime(fecha_inicio_ruta) + timedelta(days=1),
                     'estado': 'Planificada',
