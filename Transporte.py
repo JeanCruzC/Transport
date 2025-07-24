@@ -3,6 +3,7 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import plotly.express as px
+from datetime import timedelta
 
 # Configuración de la página
 st.set_page_config(
@@ -151,7 +152,7 @@ if pagina == "Dashboard":
         title="Número de Rutas por Conductor",
         labels={'num_rutas': 'Número de Rutas', 'nombre': 'Conductor'}
     )
-    fig_bar.update_xaxis(tickangle=45)
+    fig_bar.update_xaxes(tickangle=45)
     st.plotly_chart(fig_bar, use_container_width=True)
 
 elif pagina == "Conductores":
@@ -380,7 +381,7 @@ elif pagina == "Análisis":
             title="Distancia Total por Conductor (km)",
             labels={'distancia_km': 'Distancia (km)', 'nombre': 'Conductor'}
         )
-        fig_distancia.update_xaxis(tickangle=45)
+        fig_distancia.update_xaxes(tickangle=45)
         st.plotly_chart(fig_distancia, use_container_width=True)
     
     with col2:
@@ -399,7 +400,7 @@ elif pagina == "Análisis":
             title="Carga Total por Conductor (kg)",
             labels={'carga_kg': 'Carga (kg)', 'nombre': 'Conductor'}
         )
-        fig_carga.update_xaxis(tickangle=45)
+        fig_carga.update_xaxes(tickangle=45)
         st.plotly_chart(fig_carga, use_container_width=True)
     
     # Análisis temporal
